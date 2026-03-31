@@ -1,6 +1,6 @@
 {
     "name": "entra-id-plus",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "main": "dist/index.js",
     "scripts": {
         "clean": "shx rm -rf ./dist",
@@ -39,16 +39,16 @@
         "singleQuote": true
     },
     "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "clearMocks": true,
-    "collectCoverage": true,
-    "coverageThreshold": {
-        "global": {
-            "statements": 60,
-            "branches": 50,
-            "functions": 40,
-            "lines": 60
+        "preset": "ts-jest",
+        "testEnvironment": "node",
+        "clearMocks": true,
+        "collectCoverage": true,
+        "coverageThreshold": {
+            "global": {
+                "statements": 60,
+                "branches": 50,
+                "functions": 40,
+                "lines": 60
             }
         }
     }
