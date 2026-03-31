@@ -8,7 +8,16 @@ export const getSponsors: AfterOperation<AccountAfterOperationInput> = async (co
     const config: Config = await readConfig()
     const logger = getLogger(config.spConnDebugLoggingEnabled)
 
-    const userId = (output as any).identity
+    const out: any = output
+    const userId =
+        out.identity ??
+        out.id ??
+        out.uuid ??
+        out.key?.simple?.id ??
+        out.attributes?.objectId ??
+        out.attributes?.id ??
+        out.attributes?.userPrincipalName
+
     if (!userId) {
         logger.debug('getSponsors: no identity found, returning undefined')
         return undefined
@@ -22,10 +31,16 @@ export const getSponsors: AfterOperation<AccountAfterOperationInput> = async (co
 
     if (sponsors.length === 0) return undefined
 
+    const sponsorValues = sponsors
+        .map((s) => s.userPrincipalName ?? s.mail ?? s.id)
+        .filter((v): v is string => typeof v === 'string' && v.length > 0)
+
+    if (sponsorValues.length === 0) return undefined
+
     return {
         attributes: {
-            ...(output as any).attributes,
-            sponsors: sponsors[0].userPrincipalName
+            ...out.attributes,
+            sponsors: sponsorValues.length === 1 ? sponsorValues[0] : sponsorValues,
         }
     }
 }

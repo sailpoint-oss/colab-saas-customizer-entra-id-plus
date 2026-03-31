@@ -8,15 +8,16 @@ A **template** for building SailPoint SaaS Connector Customizers that extend any
 
 ```
 index.ts                      ← entry point: wires handlers to SDK commands
-├── accountOperations.ts      ← operation maps for accounts (before + after)
-├── entitlementOperations.ts  ← operation maps for entitlements (before + after)
-├── utils.ts                  ← generic engine: runBeforeOperations / runAfterOperations
+├── customOperations.ts       ← operation maps defining when logic runs (before/after hooks)
+├── operationRunner.ts        ← generic engine: runBeforeOperations / runAfterOperations
+├── utils.ts                  ← general utilities
 ├── model/
 │   ├── operation.ts          ← Operation / OperationMap type definitions
 │   └── config.ts             ← connector configuration interface
 ├── operations/               ← your custom operation functions live here
-│   ├── setSponsors.ts        ← (Entra ID) after: fetch sponsors from Graph
-│   ├── handleSponsorUpdate.ts ← (Entra ID) before: apply sponsor changes via Graph
+│   ├── setSponsors.ts        ← (Entra ID) handles deferred sponsor writes and clears (preSetSponsors, setSponsors)
+│   ├── getSponsors.ts        ← (Entra ID) after: fetches sponsors from Graph
+│   ├── setGuestGalVisibility.ts ← (Entra ID) after: enforce guest GAL visibility
 │   └── getApplication.ts     ← (Entra ID) after: parse application from entitlement name
 └── entraid-client.ts         ← (Entra ID) Microsoft Graph API wrapper
 ```
@@ -25,22 +26,23 @@ index.ts                      ← entry point: wires handlers to SDK commands
 
 1. **`index.ts`** registers a single before-handler and a single after-handler for every standard SDK command (account list/read/create/update/disable/enable/unlock, change-password, entitlement list/read).
 
-2. Each handler delegates to the **operation runner** in `utils.ts`, which iterates an **operation map** — a plain object that maps an attribute path to a function:
+2. Each handler delegates to the **operation runner** in `operationRunner.ts`, which iterates an **operation map** — a plain object that maps a hook pattern to an array of functions:
 
     ```typescript
-    // accountOperations.ts
-    export const accountAfterOperations: AfterOperationMap<AccountObject> = {
-        'attributes.sponsors': setSponsors, // attribute path → function
+    // customOperations.ts
+    export const customOperations: CustomOperationMap = {
+        'afterStdAccountCreate.sponsors': [setSponsors], // hookPattern.attributePattern → Array of functions
     }
     ```
 
-3. **Before operations** transform the SDK input in a pipeline (each function receives the input and returns the modified input). They only run when the input contains the relevant attribute.
+3. **Before operations** transform the SDK input in a pipeline (each function receives the input and returns a partial object to merge into the input). They only run when the input contains the relevant attribute, or unconditionally if mapped to `*.*`.
 
-4. **After operations** run against every output object. Each function receives the object and returns a value that the engine writes to the mapped attribute path (e.g. `attributes.sponsors`).
+4. **After operations** run against every output object. Each function receives the object and returns a partial object that the engine merges with the current item.
 
-5. Attribute paths follow a simple convention:
-    - `'attributes.foo'` → writes to `object.attributes.foo`
-    - `'disabled'` → writes to `object.disabled`
+5. Hook paths follow the `<hookPattern>.<attributePattern>` convention:
+    - `'beforeStdAccountCreate.sponsors'` → runs on beforeStdAccountCreate when 'sponsors' attribute is present
+    - `'afterStdAccountRead.*'` → runs on afterStdAccountRead unconditionally for all attributes
+    - `'*.*'` → runs on all hooks unconditionally
 
 ---
 
@@ -51,33 +53,41 @@ index.ts                      ← entry point: wires handlers to SDK commands
 ```typescript
 // src/operations/myCustomAttr.ts
 import { Context, readConfig } from '@sailpoint/connector-sdk'
-import { AccountObject, AfterOperation } from '../model/operation'
+import { AnyAfterOperationInput, AfterOperation } from '../model/operation'
 import { Config } from '../model/config'
 import { getLogger } from '../utils'
 
-export const myCustomAttr: AfterOperation<AccountObject> = async (context: Context, account: AccountObject) => {
+export const myCustomAttr: AfterOperation<AnyAfterOperationInput> = async (context: Context, output: AnyAfterOperationInput) => {
     const config: Config = await readConfig()
     const logger = getLogger(config.spConnDebugLoggingEnabled)
 
     // Your logic here — call an API, derive a value, etc.
-    logger.debug(`Computing custom attr for ${account.uuid}`)
-    return 'computed-value'
+    logger.debug(`Computing custom attr`)
+    const computedValue = 'computed-value'
+    
+    // Return an object that will be merged into the current item
+    return {
+        attributes: {
+            ...output.attributes,
+            myCustomAttr: computedValue
+        }
+    }
 }
 ```
 
 **2. Register it** in the operation map:
 
 ```typescript
-// src/accountOperations.ts
+// src/customOperations.ts
 import { myCustomAttr } from './operations/myCustomAttr'
 
-export const accountAfterOperations: AfterOperationMap<AccountObject> = {
-    'attributes.sponsors': setSponsors,
-    'attributes.myCustomAttr': myCustomAttr, // ← new
+export const customOperations: CustomOperationMap = {
+    'afterStdAccountCreate.sponsors': [setSponsors],
+    'afterStdAccountRead.*': [myCustomAttr], // ← new: runs on after read unconditionally
 }
 ```
 
-That's it. The framework handles iteration, attribute assignment, frozen-object fallback, and logging.
+That's it. The framework handles hook matching, iteration, merging the returned object, and logging.
 
 ---
 
@@ -88,18 +98,18 @@ The only Entra ID-specific files are:
 | File                                      | Purpose                                |
 | ----------------------------------------- | -------------------------------------- |
 | `src/entraid-client.ts`                   | Microsoft Graph API wrapper            |
-| `src/operations/setSponsors.ts`           | After-op: fetch sponsors               |
-| `src/operations/handleSponsorUpdate.ts`   | Before-op: apply sponsor changes       |
+| `src/operations/setSponsors.ts`           | Handles deferred sponsor writes/clears |
+| `src/operations/getSponsors.ts`           | After-op: fetches current sponsors     |
 | `src/operations/getApplication.ts`        | After-op: parse app from entitlement   |
 | `src/operations/setGuestGalVisibility.ts` | After-op: enforce guest GAL visibility |
 | `src/model/config.ts`                     | Entra ID connector config interface    |
 
-Everything else (`index.ts`, `utils.ts`, `model/operation.ts`, `accountOperations.ts`, `entitlementOperations.ts`) is generic framework code. To target a different connector:
+Everything else (`index.ts`, `operationRunner.ts`, `utils.ts`, `model/operation.ts`, `customOperations.ts`) is generic framework code. To target a different connector:
 
 1. Replace `entraid-client.ts` with a client for your target API
 2. Update `config.ts` to match your connector's configuration schema
 3. Write new operations in `src/operations/`
-4. Wire them into the operation maps in `accountOperations.ts` / `entitlementOperations.ts`
+4. Wire them into the hook patterns in `customOperations.ts`
 
 ---
 
@@ -109,10 +119,11 @@ Everything else (`index.ts`, `utils.ts`, `model/operation.ts`, `accountOperation
 
 | Phase  | Operation             | What it does                                                                                                                                                                                                                    |
 | ------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Before | `handleSponsorUpdate` | Intercepts sponsor changes in the input. For **update** commands, applies them immediately via Graph API. For **create** commands, defers the write (user doesn't exist yet) and caches the pending change for the after phase. |
-| After  | `setSponsors`         | If a deferred sponsor change was cached (create flow), applies it now that the user exists. Then fetches sponsors from `GET /users/{id}/sponsors` and returns UPN(s).                                                           |
+| Before | `preSetSponsors`      | Intercepts sponsor changes in the input. For **update** commands, applies them immediately via Graph API. For **create** commands, defers the write (user doesn't exist yet) and caches the pending change for the after phase. Located in `setSponsors.ts`. |
+| After  | `setSponsors`         | If a deferred sponsor change was cached (create flow), applies it now that the user exists. Located in `setSponsors.ts`.                                                                                                          |
+| After  | `getSponsors`         | Fetches current sponsors from `GET /users/{id}/sponsors` and returns UPN(s). Runs during reads and lists.                                                                                                                       |
 
-Sponsors are a **navigation property** in Microsoft Graph (not a direct attribute), so the base connector cannot read/write them natively. This before/after pair handles them transparently.
+Sponsors are a **navigation property** in Microsoft Graph (not a direct attribute), so the base connector cannot read/write them natively. This combination of operations handles them transparently.
 
 #### Guest GAL Visibility (account attribute)
 
